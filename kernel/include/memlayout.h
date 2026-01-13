@@ -127,3 +127,5 @@
 #define MAXUVA                  RUSTSBI_BASE
 
 #endif
+
+#define MMAPBASE                0x60000000L

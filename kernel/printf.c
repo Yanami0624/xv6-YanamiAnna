@@ -10,6 +10,8 @@
 #include "include/spinlock.h"
 #include "include/console.h"
 #include "include/printf.h"
+#include "include/proc.h"
+
 
 volatile int panicked = 0;
 
@@ -124,6 +126,10 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  struct proc *p = myproc();
+  if(p){
+    printf("pid name: %s\n", p->name);
+  }
   backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
@@ -134,12 +140,14 @@ void backtrace()
 {
   uint64 *fp = (uint64 *)r_fp();
   uint64 *bottom = (uint64 *)PGROUNDUP((uint64)fp);
-  printf("backtrace:\n");
+  printf("backtrace:\n\n\n");
+  printf("riscv64-linux-gnu-addr2line -f -p -e target/kernel /");
   while (fp < bottom) {
     uint64 ra = *(fp - 1);
-    printf("%p\n", ra - 4);
+    printf("%p ", ra - 4);
     fp = (uint64 *)*(fp - 2);
   }
+  printf("\n\n");
 }
 
 void

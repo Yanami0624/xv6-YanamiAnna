@@ -1,7 +1,11 @@
+# xv6-user/initcode.S
 # Initial process that execs /init.
 # This code runs in user space.
 
 #include "include/sysnum.h"
+
+	.text
+	.option nopic
 
 # exec(init, argv)
 .globl start
@@ -19,10 +23,11 @@ exit:
 
 # char init[] = "/init\0";
 init:
-  .string "/init\0"
+  .asciz "/init"
 
 # char *argv[] = { init, 0 };
+.section .rodata
 .p2align 2
 argv:
-  .long init
-  .long 0
+  .dword init
+  .dword 0

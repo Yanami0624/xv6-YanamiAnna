@@ -157,6 +157,17 @@ int exec(char *path, char **argv)
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
+
+  for(int i = 0; i < NVMA; ++i) {
+    if(p->vma[i].valid) {
+      if(p->vma[i].vm_file) {
+        fileclose(p->vma[i].vm_file);
+        p->vma[i].vm_file = NULL;
+      }
+      p->vma[i].valid = 0;
+    }
+  }
+
   proc_freepagetable(oldpagetable, oldsz);
   w_satp(MAKE_SATP(p->kpagetable));
   sfence_vma();

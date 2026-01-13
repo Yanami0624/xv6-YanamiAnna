@@ -33,4 +33,34 @@ int             copyin2(char *dst, uint64 srcva, uint64 len);
 int             copyinstr2(char *dst, uint64 srcva, uint64 max);
 void            vmprint(pagetable_t pagetable);
 
-#endif 
+#define NVMA 16
+
+#define PROT_READ       (1 << 0)
+#define PROT_WRITE      (1 << 1)
+#define PROT_EXEC       (1 << 2)
+
+#define MAP_SHARED      0x01
+#define MAP_PRIVATE     0x02
+#define MAP_FIXED       0x04
+#define MAP_ANONYMOUS   0x08
+
+struct vma {
+    int valid;              // 此 VMA 条目是否有效
+    uint64 start;           // 虚拟地址起始点
+    uint64 end;             // 虚拟地址结束点 (不包含，[start, end) 是可用范围）
+    int prot;               // 访问权限 (PROT_READ, PROT_WRITE, PROT_EXEC)
+    int flags;              // 映射标志 (MAP_SHARED, MAP_PRIVATE, MAP_ANONYMOUS)
+    struct file* vm_file;   // 指向被映射的 file 结构体，匿名映射时为 NULL
+    uint64 offset;          // 文件内的偏移量
+};
+
+struct proc;
+
+void vma_writeback(struct proc*, struct vma*);
+void vma_free(struct proc*);
+uint64 mmap_getaddr(struct proc*, uint64);
+
+#endif
+
+
+

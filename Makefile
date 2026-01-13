@@ -1,5 +1,5 @@
-platform	:= k210
-#platform	:= qemu
+#platform	:= k210
+platform	:= qemu
 # mode := debug
 mode := release
 K=kernel
@@ -129,7 +129,7 @@ ifndef CPUS
 CPUS := 2
 endif
 
-QEMUOPTS = -machine virt -kernel $T/kernel -m 8M -nographic
+QEMUOPTS = -machine virt -kernel $T/kernel -m 32M -nographic
 
 # use multi-core 
 QEMUOPTS += -smp $(CPUS)
@@ -146,7 +146,7 @@ ifeq ($(platform), k210)
 	@$(OBJCOPY) $(RUSTSBI) --strip-all -O binary $(k210)
 	@dd if=$(image) of=$(k210) bs=128k seek=1
 	@$(OBJDUMP) -D -b binary -m riscv $(k210) > $T/k210.asm
-	@sudo chmod 777 $(k210-serialport)
+	@chmod 777 $(k210-serialport)
 	@python3 ./tools/kflash.py -p $(k210-serialport) -b 1500000 -t $(k210)
 else
 	@$(QEMU) $(QEMUOPTS)
@@ -215,30 +215,31 @@ userprogs: $(UPROGS)
 
 dst=/mnt
 
-# @sudo cp $U/_init $(dst)/init
-# @sudo cp $U/_sh $(dst)/sh
+# @cp $U/_init $(dst)/init
+# @cp $U/_sh $(dst)/sh
 # Make fs image
 fs: $(UPROGS)
 	@if [ ! -f "fs.img" ]; then \
 		echo "making fs image..."; \
 		dd if=/dev/zero of=fs.img bs=512k count=512; \
 		mkfs.vfat -F 32 fs.img; fi
-	@sudo mount fs.img $(dst)
-	@if [ ! -d "$(dst)/bin" ]; then sudo mkdir $(dst)/bin; fi
-	@sudo cp README $(dst)/README
+	@mount fs.img $(dst)
+	@if [ ! -d "$(dst)/bin" ]; then mkdir $(dst)/bin; fi
+	@cp README $(dst)/README
 	@for file in $$( ls $U/_* ); do \
-		sudo cp $$file $(dst)/$${file#$U/_};\
-		sudo cp $$file $(dst)/bin/$${file#$U/_}; done
-	@sudo umount $(dst)
+		cp $$file $(dst)/$${file#$U/_};\
+		cp $$file $(dst)/bin/$${file#$U/_}; done
+	@cp -r riscv64/* $(dst)
+	@umount $(dst)
 
 # Write mounted sdcard
 sdcard: userprogs
-	@if [ ! -d "$(dst)/bin" ]; then sudo mkdir $(dst)/bin; fi
+	@if [ ! -d "$(dst)/bin" ]; then mkdir $(dst)/bin; fi
 	@for file in $$( ls $U/_* ); do \
-		sudo cp $$file $(dst)/bin/$${file#$U/_}; done
-	@sudo cp $U/_init $(dst)/init
-	@sudo cp $U/_sh $(dst)/sh
-	@sudo cp README $(dst)/README
+		cp $$file $(dst)/bin/$${file#$U/_}; done
+	@cp $U/_init $(dst)/init
+	@cp $U/_sh $(dst)/sh
+	@cp README $(dst)/README
 
 clean: 
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
@@ -249,3 +250,35 @@ clean:
 	.gdbinit \
 	$U/usys.S \
 	$(UPROGS)
+
+# 如果是提交到希冀平台，因为平台提供的 sdcard.img 挂载里没有 init.c 文件
+# 所以需要硬编码完整的 init.c 程序的机器码到 initcode.h 中
+HARD_CODE_INIT = 0
+
+ifeq ($(HARD_CODE_INIT), 1)
+dump: userprogs
+	@echo "HARD_CODE_INIT is 1, compile the entire init.c program into initcode.h directly."
+	@$(TOOLPREFIX)objcopy -S -O binary $U/_init tmp_initcode
+	@od -v -t x1 -An tmp_initcode | sed -E 's/ (.{2})/0x\1,/g' > kernel/include/initcode.h 
+	@rm tmp_initcode
+else
+dump: $U/initcode
+	@echo "HARD_CODE_INIT is 0, compile the bootstrap fragment initcode.S normally."
+	@od -v -t x1 -An $U/initcode | sed -E 's/ (.{2})/0x\1,/g' > kernel/include/initcode.h
+endif
+
+# 希冀平台所使用的编译命令
+all:
+	@$(MAKE) clean
+	@$(MAKE) dump HARD_CODE_INIT=1
+	@$(MAKE) build
+	@cp $(T)/kernel ./kernel-qemu
+	@cp ./bootloader/SBI/sbi-qemu ./sbi-qemu
+
+# 本地测试所使用的编译命令
+local:
+	@$(MAKE) clean
+	@$(MAKE) dump
+	@$(MAKE) build
+	@$(MAKE) fs
+	@$(MAKE) run

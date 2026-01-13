@@ -27,7 +27,7 @@ struct spinlock pid_lock;
 extern void forkret(void);
 extern void swtch(struct context*, struct context*);
 static void wakeup1(struct proc *chan);
-static void freeproc(struct proc *p);
+void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
@@ -123,7 +123,7 @@ allocpid() {
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
-static struct proc*
+struct proc*
 allocproc(void)
 {
   struct proc *p;
@@ -164,13 +164,18 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // below
+  for(int i = 0; i < NVMA; ++i) {
+    p->vma[i].valid = 0;
+  }
+
   return p;
 }
 
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
-static void
+void
 freeproc(struct proc *p)
 {
   if(p->trapframe)
@@ -191,6 +196,11 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  // below
+  for(int i = 0; i < NVMA; ++i) {
+    p->vma[i].valid = 0;
+  }
 }
 
 // Create a user page table for a given process,
@@ -239,13 +249,16 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {
+  /*
   0x17, 0x05, 0x00, 0x00, 0x13, 0x05, 0x45, 0x02,
-  0x97, 0x05, 0x00, 0x00, 0x93, 0x85, 0x35, 0x02,
-  0x93, 0x08, 0x70, 0x00, 0x73, 0x00, 0x00, 0x00,
-  0x93, 0x08, 0x20, 0x00, 0x73, 0x00, 0x00, 0x00,
-  0xef, 0xf0, 0x9f, 0xff, 0x2f, 0x69, 0x6e, 0x69,
-  0x74, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00
+0x97, 0x05, 0x00, 0x00, 0x93, 0x85, 0x35, 0x02,
+0x93, 0x08, 0x70, 0x00, 0x73, 0x00, 0x00, 0x00,
+0x93, 0x08, 0x20, 0x00, 0x73, 0x00, 0x00, 0x00,
+0xef, 0xf0, 0x9f, 0xff, 0x2f, 0x69, 0x6e, 0x69,
+0x74, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x00,
+0x00, 0x00, 0x00, 0x00
+*/
+  #include "include/initcode.h"
 };
 
 // uchar printhello[] = {
@@ -375,6 +388,16 @@ fork(void)
 
   np->state = RUNNABLE;
 
+  // below
+  for(int i = 0; i < NVMA; ++i) {
+    if(p->vma[i].valid) {
+      np->vma[i] = p->vma[i];
+      if(np->vma[i].vm_file) {
+        filedup(np->vma[i].vm_file);
+      }
+    }
+  }
+
   release(&np->lock);
 
   return pid;
@@ -429,6 +452,8 @@ exit(int status)
   eput(p->cwd);
   p->cwd = 0;
 
+  vma_free(p);
+
   // we might re-parent a child to init. we can't be precise about
   // waking up init, since we can't acquire its lock once we've
   // acquired any other proc lock. so wake up init whether that's
@@ -473,7 +498,7 @@ exit(int status)
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
 int
-wait(uint64 addr)
+wait(int wpid, uint64 addr)
 {
   struct proc *np;
   int havekids, pid;
@@ -491,6 +516,11 @@ wait(uint64 addr)
       // acquiring the lock first would cause a deadlock,
       // since np might be an ancestor, and we already hold p->lock.
       if(np->parent == p){
+        //printf("looping\n");
+        if(wpid > 0 && np -> pid != wpid) {
+          havekids = 1;
+          continue;
+        }
         // np->parent can't change between the check and the acquire()
         // because only the parent changes it, and we're the parent.
         acquire(&np->lock);
@@ -498,7 +528,8 @@ wait(uint64 addr)
         if(np->state == ZOMBIE){
           // Found one.
           pid = np->pid;
-          if(addr != 0 && copyout2(addr, (char *)&np->xstate, sizeof(np->xstate)) < 0) {
+          int status = np -> xstate << 8;
+          if(addr != 0 && copyout2(addr, (char *)&status, sizeof(status)) < 0) {
             release(&np->lock);
             release(&p->lock);
             return -1;
@@ -796,3 +827,97 @@ procnum(void)
   return num;
 }
 
+#include "include/types.h"
+#include "include/riscv.h"
+#include "include/param.h"
+#include "include/stat.h"
+#include "include/spinlock.h"
+#include "include/proc.h"
+#include "include/sleeplock.h"
+#include "include/file.h"
+#include "include/pipe.h"
+#include "include/fcntl.h"
+#include "include/fat32.h"
+#include "include/syscall.h"
+#include "include/string.h"
+#include "include/printf.h"
+#include "include/vm.h"
+
+int
+clone(void)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+
+  uint64 stack;
+
+  // Allocate process.
+  if((np = allocproc()) == NULL){
+    return -1;
+  }
+
+  // Copy user memory from parent to child.
+  if(uvmcopy(p->pagetable, np->pagetable, np->kpagetable, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  np->sz = p->sz;
+
+  np->parent = p;
+
+  // copy tracing mask from parent.
+  np->tmask = p->tmask;
+
+  // copy saved user registers.
+  *(np->trapframe) = *(p->trapframe);
+
+  argaddr(1, &stack);
+  if(stack != NULL) {
+    uint64 fn, arg;
+    if (copyin(p->pagetable, (char*)&fn, stack, sizeof(fn)) < 0 ||
+      copyin(p->pagetable, (char*)&arg, stack + 8, sizeof(arg)) < 0) {
+      freeproc(np);
+      release(&np->lock);
+      return -1;
+    }
+    np -> trapframe -> epc = fn;
+    np -> trapframe -> a1 = arg;
+  }
+
+  // Cause fork to return 0 in the child.
+  np->trapframe->a0 = 0;
+
+  // increment reference counts on open file descriptors.
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
+      np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = edup(p->cwd);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+
+  pid = np->pid;
+
+  np->state = RUNNABLE;
+
+  // below
+  for(int i = 0; i < NVMA; ++i) {
+    if(p->vma[i].valid) {
+      np->vma[i] = p->vma[i];
+      if(np->vma[i].vm_file) {
+        filedup(np->vma[i].vm_file);
+      }
+    }
+  }
+
+  release(&np->lock);
+
+  return pid;
+}
+
+uint64
+sys_sched_yield(void) {
+  yield();
+  return 0;
+}

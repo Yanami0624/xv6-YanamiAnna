@@ -232,9 +232,9 @@ vmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("vmunmap: walk");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("vmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("vmunmap: not a leaf");
     if(do_free){
@@ -647,4 +647,61 @@ void vmprint(pagetable_t pagetable)
     }
   }
   return;
+}
+
+void vma_writeback(struct proc *p, struct vma *v) {
+  if(
+    v->valid == 0 ||
+    (v->flags & MAP_SHARED) == 0 ||
+    (v->prot & PROT_WRITE) == 0 ||
+    v->vm_file == NULL ||
+    v->vm_file->writable == 0
+  ) {
+    return;
+  }
+
+  for (uint64 va = v->start; va < v->end; va += PGSIZE) {
+    struct dirent *ep = v->vm_file->ep;
+    uint64 pa = walkaddr(p->pagetable, va);
+    if(pa == 0) continue;
+    elock(ep);
+    uint64 offset = (va - v->start) + v->offset;
+    ewrite(ep, 0, pa, offset, PGSIZE);
+    eunlock(ep);
+  }
+}
+
+void vma_free(struct proc *p) {
+  for(int i = 0; i < NVMA; ++i) {
+    struct vma *v = &p->vma[i];
+    if(v->valid == 0) continue;
+
+    int npages = (v->end - v->start) / PGSIZE;
+    int do_free = (v->flags & MAP_SHARED) == 0;
+    vmunmap(p->pagetable, v->start, npages, do_free);
+
+    if(v->vm_file != NULL) {
+      fileclose(v->vm_file);
+      v->vm_file = NULL;
+    }
+
+    v->valid = 0;
+  }
+}
+
+uint64 mmap_getaddr(struct proc *p, uint64 len) {
+  uint64 addr = MMAPBASE - len;
+
+  for(; addr >= p->sz; addr -= len) {
+    for(int i = 0; i < NVMA; ++i) {
+      struct vma *v = &p->vma[i];
+      if(v->valid && v->start <= addr && v->end >= addr) {
+        addr = v->start;
+        goto next;
+      }
+    }
+    return addr;
+    next:
+  }
+  return 0;
 }

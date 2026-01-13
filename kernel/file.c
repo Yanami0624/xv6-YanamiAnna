@@ -36,6 +36,13 @@ fileinit(void)
   #endif
 }
 
+
+void assert(int flag) {
+  if(!flag) {
+    printf("assert failed! (self-def)\n");
+  }
+}
+
 // Allocate a file structure.
 struct file*
 filealloc(void)
@@ -70,6 +77,8 @@ filedup(struct file *f)
 void
 fileclose(struct file *f)
 {
+  if(f == NULL) return;
+
   struct file ff;
 
   acquire(&ftable.lock);
@@ -123,6 +132,8 @@ fileread(struct file *f, uint64 addr, int n)
   if(f->readable == 0)
     return -1;
 
+  //printf("%d\n", f->type);
+
   switch (f->type) {
     case FD_PIPE:
         r = piperead(f->pipe, addr, n);
@@ -144,6 +155,7 @@ fileread(struct file *f, uint64 addr, int n)
 
   return r;
 }
+
 
 // Write to file f.
 // addr is a user virtual address.

@@ -1,0 +1,1 @@
+od -t xC xv6-user/initcode | awk '{$1 = ""; sub(/ /, ""); gsub(/ /, ", 0x"); $NF = $NF ","; $1 = "0x" $1; print $0}' | sed -e '$d'

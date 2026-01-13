@@ -21,6 +21,32 @@
 #include "include/printf.h"
 #include "include/vm.h"
 
+void asserteq(uint64 a, uint64 b) {
+  if(a != b) {
+    printf("asserteq failed!\n");
+    printf("a: %d; b: %d\n", a, b);
+  } else printf("asserteq successed!\n");
+}
+
+void assertneq(uint64 a, uint64 b) {
+  if(a == b) {
+    printf("assertneq failed!\n");
+  } else printf("assertneq successed!\n");
+}
+
+void printofile() {
+  int fd;
+  struct proc *p = myproc();
+
+  printf("------ofiles:\n");
+  for(fd = 0; fd < NOFILE; fd++){
+    printf("%d\n", p->ofile[fd]);
+    if(p->ofile[fd] == 0){
+      break;
+    }
+  }
+  printf("------\n");
+}
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -46,10 +72,12 @@ argfd(int n, int *pfd, struct file **pf)
 static int
 fdalloc(struct file *f)
 {
+  //assertneq((uint64)NULL, (uint64)f);
   int fd;
   struct proc *p = myproc();
 
   for(fd = 0; fd < NOFILE; fd++){
+    //printf("loop...%d\n", fd);
     if(p->ofile[fd] == 0){
       p->ofile[fd] = f;
       return fd;
@@ -81,6 +109,11 @@ sys_read(void)
 
   if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
     return -1;
+  
+  int fdd;
+  argint(0, &fdd);  
+  //printf("%d in read\n", fdd);
+
   return fileread(f, p, n);
 }
 
@@ -94,6 +127,11 @@ sys_write(void)
   if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
     return -1;
 
+  
+  int fdd;
+  argint(0, &fdd);  
+  //printf("%d in write\n", fdd);
+  
   return filewrite(f, p, n);
 }
 
@@ -330,39 +368,50 @@ sys_readdir(void)
 
 // get absolute cwd string
 uint64
-sys_getcwd(void)
-{
+sys_getcwd(void) {
   uint64 addr;
-  if (argaddr(0, &addr) < 0)
-    return -1;
+  int size;
+  if (argaddr(0, &addr) < 0 || argint(1, &size) < 0)
+    return NULL;
 
-  struct dirent *de = myproc()->cwd;
+  struct dirent* de = myproc()->cwd;
   char path[FAT32_MAX_PATH];
-  char *s;
-  int len;
+
+  char* s = path + sizeof(path) - 1;
+  *s = '\0';
 
   if (de->parent == NULL) {
-    s = "/";
-  } else {
-    s = path + FAT32_MAX_PATH - 1;
-    *s = '\0';
+    s--;
+    *s = '/';
+  }
+  else {
     while (de->parent) {
-      len = strlen(de->filename);
+      int len = strlen(de->filename);
       s -= len;
-      if (s <= path)          // can't reach root "/"
-        return -1;
-      strncpy(s, de->filename, len);
-      *--s = '/';
+      if (s < path)
+        return NULL;
+      memmove(s, de->filename, len);
+
+      s--;
+      if (s < path)
+        return NULL;
+      *s = '/';
+
       de = de->parent;
     }
   }
 
-  // if (copyout(myproc()->pagetable, addr, s, strlen(s) + 1) < 0)
-  if (copyout2(addr, s, strlen(s) + 1) < 0)
-    return -1;
-  
-  return 0;
+  memmove(path, s, strlen(s) + 1);
 
+  int path_length = strlen(path) + 1;
+  if (path_length > size) {
+    return NULL;
+  }
+
+  if (copyout2(addr, path, strlen(path) + 1) < 0)
+    return NULL;
+
+  return addr;
 }
 
 // Is the directory dp empty except for "." and ".." ?
@@ -494,3 +543,155 @@ fail:
     eput(src);
   return -1;
 }
+
+
+/**
+ * @brief 递归地获取一个目录条目的绝对路径。
+ * @param de        目标目录条目。
+ * @param path_buf  用于存储结果的输出缓冲区。
+ * @param buf_size  缓冲区的总大小。
+ * @return 成功返回 0，失败返回 -1。
+ */
+ static int get_abspath(struct dirent* de, char* path_buf, int buf_size) {
+  // 递归退出，已经到达根目录
+  if (de == NULL || de->parent == NULL) {
+    if (buf_size < 2) {
+      return -1;
+    }
+    strncpy(path_buf, "/", buf_size);
+    return 0;
+  }
+  if (get_abspath(de->parent, path_buf, buf_size) < 0) {
+    return -1;
+  }
+  int parent_len = strlen(path_buf);
+
+  // 非根目录需要追加一个 /
+  if (parent_len > 1) {
+    if (parent_len + 1 >= buf_size) {
+      return -1;
+    }
+    path_buf[parent_len++] = '/';
+    path_buf[parent_len] = '\0';
+  }
+
+  safestrcpy(path_buf + parent_len, de->filename, buf_size - parent_len);
+  return 0;
+}
+
+/**
+ * @brief 将路径参数安全地转换为绝对路径。
+ * @param path  输入的路径字符串 (in)，转换后的绝对路径 (out)。缓冲区大小应为 FAT32_MAX_PATH。
+ * @param fd    目录文件描述符 dirfd。
+ * @return 成功返回 0，失败返回 -1。
+ */
+int get_path(char* path, int fd) {
+  if (path == NULL) {
+    return -1;
+  }
+  // 绝对路径无需处理
+  if (path[0] == '/') {
+    return 0;
+  }
+  // 预处理 './'
+  if (path[0] == '.' && path[1] == '/') {
+    path += 2;
+  }
+  char base_path[FAT32_MAX_PATH];
+  struct dirent* base_de = NULL;
+  // 相对当前目录进行定位
+  if (fd == AT_FDCWD) {
+    base_de = myproc()->cwd;
+  }
+  // 相对于指定的 fd 定位
+  else {
+    if (fd < 0 || fd >= NOFILE) {
+      return -1;
+    }
+    struct file* f = myproc()->ofile[fd];
+    if (f == NULL || !(f->ep->attribute & ATTR_DIRECTORY)) {
+      return -1;
+    }
+    base_de = f->ep;
+  }
+  // 获取绝对路径
+  if (get_abspath(base_de, base_path, FAT32_MAX_PATH) < 0) {
+    return -1;
+  }
+  // 使用一个临时缓冲区来安全地拼接最终路径
+  char final_path[FAT32_MAX_PATH];
+
+  safestrcpy(final_path, base_path, FAT32_MAX_PATH);
+  int base_len = strlen(final_path);
+
+  // 非根目录需要追加一个 /
+  if (base_len > 1) {
+    if (base_len + 1 >= sizeof(final_path)) {
+      return -1;
+    }
+    final_path[base_len++] = '/';
+    final_path[base_len] = '\0';
+  }
+
+  safestrcpy(final_path + base_len, path, FAT32_MAX_PATH - base_len);
+  safestrcpy(path, final_path, FAT32_MAX_PATH);
+
+  return 0;
+}
+
+uint64 sys_openat(void) {
+  int dirfd, flags, fd, mode;
+  char path[FAT32_MAX_PATH];
+  struct file* f;
+  struct dirent* ep;
+
+  if(
+    argint(0, &dirfd) < 0 ||
+    argstr(1, path, FAT32_MAX_PATH) < 0 ||
+    argint(2, &flags) < 0 ||
+    argint(3, &mode) < 0
+  ) {
+    return -1;
+  }
+
+  if(get_path(path, dirfd) < 0) return -1;
+
+  //printf("%d\n", O_CREATE | O_RDWR);
+  //printf("%d\n", flags);
+  if(flags & O_CREATE) {
+    if ((ep = create(path, T_FILE, mode)) == NULL) return -1;
+  } 
+  else {
+    if((ep = ename(path)) == NULL) return -1;
+
+    elock(ep);
+    if((ep->attribute & ATTR_DIRECTORY) && (flags & (O_WRONLY | O_RDONLY))) {
+      eunlock(ep);
+      eput(ep);
+      return -1;
+    }
+  }
+
+  if((f = filealloc()) == NULL || (fd = fdalloc(f)) < 0) {
+    if(f) fileclose(f);
+    eunlock(ep);
+    eput(ep);
+    return -1;
+  }
+  
+  if((ep->attribute & ATTR_DIRECTORY) && (flags & (O_WRONLY | O_RDWR))) {
+    etrunc(ep);
+  }
+
+  f->type = FD_ENTRY;
+  f->off = (flags & O_APPEND) ? ep->file_size: 0;
+  f->ep = ep;
+  f->readable = !(flags & O_WRONLY);
+  f->writable = (flags & O_WRONLY) || (flags & O_RDWR);
+
+  //asserteq(f->writable, 1);
+  eunlock(ep);
+  
+  return fd;
+}
+

@@ -12,6 +12,8 @@
 #include "include/console.h"
 #include "include/timer.h"
 #include "include/disk.h"
+#include "include/vm.h"
+
 
 extern char trampoline[], uservec[], userret[];
 
@@ -47,6 +49,8 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+#include "include/kalloc.h"
+#include <string.h>
 void
 usertrap(void)
 {
@@ -81,10 +85,67 @@ usertrap(void)
     // ok
   } 
   else {
-    printf("\nusertrap(): unexpected scause %p pid=%d %s\n", r_scause(), p->pid, p->name);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    // trapframedump(p->trapframe);
-    p->killed = 1;
+    uint64 scause = r_scause();
+    uint64 stval = r_stval();
+
+    if (scause == 12 || scause == 13 || scause == 15) {
+      struct vma* v = 0;
+      for (int i = 0; i < NVMA; i++) {
+        if (p->vma[i].valid && stval >= p->vma[i].start && stval < p->vma[i].end) {
+          v = &p->vma[i];
+          break;
+        }
+      }
+
+      if (v == NULL) {
+        printf("usertrap(): segfault pid=%d %s, va=%p\n", p->pid, p->name, stval);
+        p->killed = 1;
+      }
+      else {
+        if (
+          (scause == 12 && !(v->prot & PROT_EXEC)) ||
+          (scause == 13 && !(v->prot & PROT_READ)) ||
+          (scause == 15 && !(v->prot & PROT_WRITE))
+        ) {
+          printf("usertrap(): protection fault pid=%d %s, va=%p\n", p->pid, p->name, stval);
+          p->killed = 1;
+        }
+        else {
+          uint64 va_page_start = PGROUNDDOWN(stval);
+
+          char* mem = kalloc();
+            memset(mem, 0, PGSIZE);
+
+            if (v->vm_file) {
+              elock(v->vm_file->ep);
+              uint64 file_offset = v->offset + (va_page_start - v->start);
+              eread(v->vm_file->ep, 0, (uint64)mem, file_offset, PGSIZE);
+              eunlock(v->vm_file->ep);
+            }
+
+            int pte_flags = PTE_U;
+            if (v->prot & PROT_READ) pte_flags |= PTE_R;
+            if (v->prot & PROT_WRITE) pte_flags |= PTE_W;
+            if (v->prot & PROT_EXEC) pte_flags |= PTE_X;
+
+            if (mappages(p->pagetable, va_page_start, PGSIZE, (uint64)mem, pte_flags) != 0) {
+              kfree(mem); 
+              printf("usertrap(): mappages failed\n");
+              p->killed = 1;
+            }
+            if (mappages(p->kpagetable, va_page_start, PGSIZE, (uint64)mem, pte_flags & ~PTE_U) != 0) {
+              kfree(mem);
+              vmunmap(p->pagetable, va_page_start, 1, 1);
+              p->killed = 1;
+            }
+        }
+      }
+    }
+    else {
+      printf("\nusertrap(): unexpected scause %p pid=%d %s\n", r_scause(), p->pid, p->name);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   }
 
   if(p->killed)

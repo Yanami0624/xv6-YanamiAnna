@@ -116,6 +116,19 @@ extern uint64 sys_remove(void);
 extern uint64 sys_trace(void);
 extern uint64 sys_sysinfo(void);
 extern uint64 sys_rename(void);
+extern uint64 sys_shutdown(void);
+extern uint64 sys_times(void);
+extern uint64 sys_uname(void);
+extern uint64 sys_gettimeofday(void);
+extern uint64 sys_nanosleep(void);
+extern uint64 sys_clone(void);
+extern uint64 sys_sched_yield(void);
+extern uint64 sys_openat(void);
+extern uint64 sys_brk(void);
+extern uint64 sys_mmap(void);
+extern uint64 sys_munmap(void);
+
+
 
 static uint64 (*syscalls[])(void) = {
   [SYS_fork]        sys_fork,
@@ -144,6 +157,18 @@ static uint64 (*syscalls[])(void) = {
   [SYS_trace]       sys_trace,
   [SYS_sysinfo]     sys_sysinfo,
   [SYS_rename]      sys_rename,
+  [SYS_shutdown]    sys_shutdown,
+  [SYS_uname]       sys_uname,
+  [SYS_times]       sys_times,
+  [SYS_gettimeofday]sys_gettimeofday,
+  [SYS_nanosleep]   sys_nanosleep,
+  [SYS_clone]       sys_clone,
+  [SYS_wait4]       sys_wait,
+  [SYS_sched_yield] sys_sched_yield,
+  [SYS_openat]      sys_openat,
+  [SYS_brk]         sys_brk,
+  [SYS_mmap]        sys_mmap,
+  [SYS_munmap]      sys_munmap,
 };
 
 static char *sysnames[] = {
@@ -173,6 +198,18 @@ static char *sysnames[] = {
   [SYS_trace]       "trace",
   [SYS_sysinfo]     "sysinfo",
   [SYS_rename]      "rename",
+  [SYS_shutdown]    "shutdown",
+  [SYS_uname]       "uname",
+  [SYS_times]       "times",
+  [SYS_gettimeofday]"gettimeofday",
+  [SYS_nanosleep]   "nanosleep",
+  [SYS_clone]       "clone",
+  [SYS_wait4]       "wait",
+  [SYS_sched_yield] "sched_yield",
+  [SYS_openat]      "openat",
+  [SYS_brk]         "brk",
+  [SYS_mmap]        "mmap",
+  [SYS_munmap]      "unmmap",
 };
 
 void
